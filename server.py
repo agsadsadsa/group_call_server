@@ -32,4 +32,4 @@ async def websocket_endpoint(websocket: WebSocket, group: str, user: str):
         del connections[websocket]
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=8000)
+    uvicorn.run("server:app", host="0.0.0.0", port=10000)
