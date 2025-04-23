@@ -5,7 +5,6 @@ import uvicorn
 
 app = FastAPI()
 
-# 允许跨域
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,7 +13,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 存储连接分组信息
+# 分组结构: {group: [(websocket, username)]}
 groups = {}
 connections = {}
 
@@ -24,7 +23,7 @@ async def websocket_endpoint(websocket: WebSocket, group: str, user: str):
 
     if group not in groups:
         groups[group] = []
-    groups[group].append(websocket)
+    groups[group].append((websocket, user))
     connections[websocket] = group
 
     print(f"✅ 用户 {user} 加入了分组 {group}")
@@ -36,15 +35,22 @@ async def websocket_endpoint(websocket: WebSocket, group: str, user: str):
                 _, target_group, from_user = data.split(":")
                 print(f"📣 呼叫请求：{from_user} 呼叫分组 {target_group}")
                 if target_group in groups:
-                    for conn in groups[target_group]:
+                    for conn, _ in groups[target_group]:
                         if conn != websocket:
                             await conn.send_text(f"CALL_FROM:{from_user}")
+
+            elif data.startswith("LIST_USERS:"):
+                _, group_name = data.split(":")
+                if group_name in groups:
+                    user_list = [u for _, u in groups[group_name]]
+                    await websocket.send_text(f"USER_LIST:{','.join(user_list)}")
+
     except WebSocketDisconnect:
         print(f"❌ 用户 {user} 断开连接")
-        groups[group].remove(websocket)
+        if group in groups:
+            groups[group] = [(ws, u) for ws, u in groups[group] if ws != websocket]
         del connections[websocket]
 
-# Render 用 $PORT 启动服务
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("server:app", host="0.0.0.0", port=port)
