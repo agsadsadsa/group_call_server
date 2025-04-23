@@ -1,74 +1,82 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+import asyncio
+import websockets
+import json
+from collections import defaultdict
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 数据结构：{ group_name: {username: websocket} }
+groups = defaultdict(dict)
 
-# 用户连接映射
-user_connections = {}  # {username: websocket}
-user_groups = {}       # {username: set(groups)}
-group_members = {}     # {group: set(usernames)}
+async def notify_users():
+    """广播当前在线用户列表到每个连接的客户端"""
+    for group, users in groups.items():
+        msg = {
+            "type": "USER_LIST",
+            "group": group,
+            "users": list(users.keys())
+        }
+        for ws in users.values():
+            await safe_send(ws, json.dumps(msg))
 
-@app.websocket("/ws/{username}")
-async def websocket_endpoint(websocket: WebSocket, username: str):
-    await websocket.accept()
-    user_connections[username] = websocket
-    user_groups[username] = set()
+async def safe_send(ws, msg):
+    try:
+        await ws.send(msg)
+    except:
+        pass  # 忽略发送失败的连接
 
-    print(f"✅ 用户 {username} 已连接")
+async def handler(websocket, path):
+    username = None
+    joined_groups = set()
 
     try:
-        while True:
-            data = await websocket.receive_text()
+        async for message in websocket:
+            data = json.loads(message)
 
-            if data.startswith("JOIN_GROUP::"):
-                _, group = data.split("::")
-                user_groups[username].add(group)
-                group_members.setdefault(group, set()).add(username)
-                await websocket.send_text(f"JOINED::{group}")
-                await notify_user_list(group)
+            if data["type"] == "REGISTER":
+                username = data["username"]
+                initial_groups = data.get("groups", [])
+                for g in initial_groups:
+                    groups[g][username] = websocket
+                    joined_groups.add(g)
+                await notify_users()
 
-            elif data.startswith("LEAVE_GROUP::"):
-                _, group = data.split("::")
-                user_groups[username].discard(group)
-                group_members.get(group, set()).discard(username)
-                await websocket.send_text(f"LEFT::{group}")
-                await notify_user_list(group)
+            elif data["type"] == "JOIN_GROUP":
+                group = data["group"]
+                if username:
+                    groups[group][username] = websocket
+                    joined_groups.add(group)
+                    await notify_users()
 
-            elif data.startswith("GROUP_CALL::"):
-                _, group = data.split("::")
-                for member in group_members.get(group, []):
-                    if member != username and member in user_connections:
-                        await user_connections[member].send_text(f"GROUP_CALL::{username}::{group}")
+            elif data["type"] == "LEAVE_GROUP":
+                group = data["group"]
+                if username and group in groups and username in groups[group]:
+                    del groups[group][username]
+                    joined_groups.discard(group)
+                    await notify_users()
 
-            elif data.startswith("GET_USERS::"):
-                _, group = data.split("::")
-                users = ",".join(group_members.get(group, []))
-                await websocket.send_text(f"USERS::{group}::{users}")
+            elif data["type"] == "GROUP_CALL":
+                group = data["group"]
+                sender = data["from"]
+                for user, ws in groups.get(group, {}).items():
+                    if user != sender:
+                        await safe_send(ws, json.dumps({
+                            "type": "GROUP_CALL",
+                            "from": sender,
+                            "group": group
+                        }))
 
-    except WebSocketDisconnect:
-        print(f"❌ 用户 {username} 断开连接")
-        if username in user_connections:
-            del user_connections[username]
-        for group in user_groups.get(username, []):
-            group_members[group].discard(username)
-            await notify_user_list(group)
-        user_groups.pop(username, None)
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    finally:
+        # 清理用户连接
+        for g in list(joined_groups):
+            if username and username in groups[g]:
+                del groups[g][username]
+        await notify_users()
 
-async def notify_user_list(group):
-    users = group_members.get(group, set())
-    message = f"USERS::{group}::{','.join(users)}"
-    for user in users:
-        ws = user_connections.get(user)
-        if ws:
-            await ws.send_text(message)
+async def main():
+    async with websockets.serve(handler, "0.0.0.0", 8765):
+        print("✅ Server running on ws://0.0.0.0:8765")
+        await asyncio.Future()  # 永远阻塞
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=8000)
+    asyncio.run(main())
