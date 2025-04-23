@@ -3,10 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-groups = {}  # { group_name: [WebSocket, ...] }
-connections = {}  # { WebSocket: group_name }
+groups = {}
+connections = {}
 
 @app.websocket("/ws/{group}/{user}")
 async def websocket_endpoint(websocket: WebSocket, group: str, user: str):
