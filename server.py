@@ -5,6 +5,7 @@ import uvicorn
 
 app = FastAPI()
 
+# 允许跨域
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,7 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 分组结构: {group: [(websocket, username)]}
+# 存储连接分组信息
 groups = {}
 connections = {}
 
@@ -23,8 +24,8 @@ async def websocket_endpoint(websocket: WebSocket, group: str, user: str):
 
     if group not in groups:
         groups[group] = []
-    groups[group].append((websocket, user))
-    connections[websocket] = group
+    groups[group].append(websocket)
+    connections[websocket] = (group, user)
 
     print(f"✅ 用户 {user} 加入了分组 {group}")
 
@@ -35,22 +36,24 @@ async def websocket_endpoint(websocket: WebSocket, group: str, user: str):
                 _, target_group, from_user = data.split(":")
                 print(f"📣 呼叫请求：{from_user} 呼叫分组 {target_group}")
                 if target_group in groups:
-                    for conn, _ in groups[target_group]:
+                    for conn in groups[target_group]:
                         if conn != websocket:
                             await conn.send_text(f"CALL_FROM:{from_user}")
-
             elif data.startswith("LIST_USERS:"):
-                _, group_name = data.split(":")
-                if group_name in groups:
-                    user_list = [u for _, u in groups[group_name]]
-                    await websocket.send_text(f"USER_LIST:{','.join(user_list)}")
-
+                _, target_group = data.split(":")
+                if target_group in groups:
+                    user_list = []
+                    for conn in groups[target_group]:
+                        _, conn_user = connections.get(conn, ("", ""))
+                        user_list.append(conn_user)
+                    user_list_str = ", ".join(user_list)
+                    await websocket.send_text(f"USER_LIST:{user_list_str}")
     except WebSocketDisconnect:
         print(f"❌ 用户 {user} 断开连接")
-        if group in groups:
-            groups[group] = [(ws, u) for ws, u in groups[group] if ws != websocket]
+        groups[group].remove(websocket)
         del connections[websocket]
 
+# Render 用 $PORT 启动服务
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("server:app", host="0.0.0.0", port=port)
